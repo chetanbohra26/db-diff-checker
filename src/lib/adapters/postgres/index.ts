@@ -105,14 +105,15 @@ function buildSchema(
     const tableName = row.table_name.toLowerCase();
     if (!tables[tableName]) continue;
 
+    const indexName = row.index_name.toLowerCase();
     const index: IndexSchema = {
-      name: row.index_name,
+      name: indexName,
       columns: row.column_names.map((c) => c.toLowerCase()),
       unique: row.is_unique,
       primary: row.is_primary,
     };
 
-    tables[tableName].indexes[row.index_name] = index;
+    tables[tableName].indexes[indexName] = index;
   }
 
   // ── Foreign keys (single pass) ───────────────────────────────────────────
@@ -120,8 +121,9 @@ function buildSchema(
     const tableName = row.table_name.toLowerCase();
     if (!tables[tableName]) continue;
 
+    const constraintName = row.constraint_name.toLowerCase();
     const fk: ForeignKeySchema = {
-      name: row.constraint_name,
+      name: constraintName,
       columns: row.columns.map((c) => c.toLowerCase()),
       referencedTable: row.referenced_table.toLowerCase(),
       referencedColumns: row.referenced_columns.map((c) => c.toLowerCase()),
@@ -129,7 +131,7 @@ function buildSchema(
       onUpdate: row.update_rule,
     };
 
-    tables[tableName].foreignKeys[row.constraint_name] = fk;
+    tables[tableName].foreignKeys[constraintName] = fk;
   }
 
   return { tables, driver: 'postgres' };
@@ -144,7 +146,7 @@ export class PostgresAdapter implements SchemaAdapter {
     try {
       const schema = config.schema ?? 'public';
 
-      // Run all 4 queries sequentially
+      // Run all 4 queries in parallel
       const [columnsResult, enumsResult, indexesResult, fksResult] = await Promise.all([
         client.query<RawColumn>(COLUMNS_QUERY, [schema]),
         client.query<RawEnum>(ENUMS_QUERY, [schema]),
@@ -165,12 +167,14 @@ export class PostgresAdapter implements SchemaAdapter {
 
   async testConnection(config: ConnectionConfig): Promise<boolean> {
     const client = this.createClient(config);
-    await client.connect();
+    let connected = false;
     try {
+      await client.connect();
+      connected = true;
       await client.query('SELECT 1');
       return true;
     } finally {
-      await client.end();
+      if (connected) await client.end();
     }
   }
 

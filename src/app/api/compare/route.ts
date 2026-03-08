@@ -44,11 +44,11 @@ function noStoreHeaders(): Record<string, string> {
 function classifyError(err: unknown): { message: string; code: ErrorCode; status: number } {
   const msg = err instanceof Error ? err.message.toLowerCase() : '';
 
-  if (msg.includes('connect') || msg.includes('refused') || msg.includes('timeout') || msg.includes('econnrefused')) {
-    return { message: 'Failed to connect to database', code: 'CONNECTION_FAILED', status: 502 };
-  }
-  if (msg.includes('timeout')) {
+  if (msg.includes('timeout') || msg.includes('etimedout') || msg.includes('timedout')) {
     return { message: 'Connection timed out', code: 'TIMEOUT', status: 504 };
+  }
+  if (msg.includes('connect') || msg.includes('refused') || msg.includes('econnrefused')) {
+    return { message: 'Failed to connect to database', code: 'CONNECTION_FAILED', status: 502 };
   }
   if (msg.includes('failed to load schema') || msg.includes('query')) {
     return { message: 'Failed to load schema', code: 'QUERY_FAILED', status: 502 };

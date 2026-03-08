@@ -41,10 +41,11 @@ export function diffColumns(
     const refCol = refTable.columns[colName];
     const tgtCol = tgtTable.columns[colName];
 
-    // Type mismatch — skip enum columns (handled by diffEnums)
+    // Type mismatch — skip only when BOTH sides are enums (diffEnums handles that case).
+    // If one side changed from enum to a regular type (or vice versa), report it here.
     const refIsEnum = refCol.enumValues !== null;
     const tgtIsEnum = tgtCol.enumValues !== null;
-    if (!refIsEnum && !tgtIsEnum && refCol.type !== tgtCol.type) {
+    if (!(refIsEnum && tgtIsEnum) && refCol.type !== tgtCol.type) {
       diffs.push({
         kind: 'column_type_mismatch',
         table: tableName,

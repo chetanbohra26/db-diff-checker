@@ -83,7 +83,7 @@ describe('normalizePostgresType', () => {
   });
 
   // ── Array ──────────────────────────────────────────────────────────────────
-  test('array with _int4 udt → int[]', () => {
+  test('array with _int4 udt → int4[]', () => {
     expect(normalizePostgresType('array', '_int4', null, null, null)).toBe('int4[]');
   });
 
