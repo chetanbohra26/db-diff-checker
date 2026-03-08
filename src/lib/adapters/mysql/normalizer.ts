@@ -44,9 +44,9 @@ export function normalizeMySQLType(raw: string): string {
     const displayWidth = intMatch[2];
     const unsigned = lower.includes('unsigned');
 
-    // Preserve tinyint(1) — used as boolean
+    // Preserve tinyint(1) — used as boolean; keep unsigned qualifier if present
     if (intType === 'tinyint' && displayWidth === '1') {
-      return 'tinyint(1)';
+      return unsigned ? 'tinyint(1) unsigned' : 'tinyint(1)';
     }
 
     return unsigned ? `${intType} unsigned` : intType;

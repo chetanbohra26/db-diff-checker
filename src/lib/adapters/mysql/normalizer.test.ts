@@ -26,6 +26,10 @@ describe('normalizeMySQLType', () => {
     expect(normalizeMySQLType('tinyint(1)')).toBe('tinyint(1)');
   });
 
+  test('preserves tinyint(1) unsigned — unsigned boolean', () => {
+    expect(normalizeMySQLType('tinyint(1) unsigned')).toBe('tinyint(1) unsigned');
+  });
+
   test('handles unsigned int', () => {
     expect(normalizeMySQLType('int(10) unsigned')).toBe('int unsigned');
   });
@@ -50,6 +54,14 @@ describe('normalizeMySQLType', () => {
 
   test('strips decimal zerofill', () => {
     expect(normalizeMySQLType('decimal(10,2) zerofill')).toBe('decimal(10,2)');
+  });
+
+  test('preserves decimal unsigned qualifier', () => {
+    expect(normalizeMySQLType('decimal(10,2) unsigned')).toBe('decimal(10,2) unsigned');
+  });
+
+  test('strips decimal unsigned zerofill — keeps unsigned, drops zerofill', () => {
+    expect(normalizeMySQLType('decimal(10,2) unsigned zerofill')).toBe('decimal(10,2) unsigned');
   });
 
   // ── Case normalization ────────────────────────────────────────────────────

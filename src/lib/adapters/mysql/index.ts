@@ -15,6 +15,7 @@ import {
   FOREIGN_KEYS_QUERY,
 } from './queries';
 import { normalizeMySQLType, parseEnumValues, normalizeDefault } from './normalizer';
+import { sanitizeError } from '../../util/sanitizeError';
 
 // ── Raw row shapes from information_schema ────────────────────────────────
 
@@ -191,8 +192,9 @@ function buildSchema(
 
 export class MySQLAdapter implements SchemaAdapter {
   async loadSchema(config: ConnectionConfig): Promise<DatabaseSchema> {
-    const connection = await this.createConnection(config);
+    let connection: mysql.Connection | undefined;
     try {
+      connection = await this.createConnection(config);
       const db = config.database;
 
       // Run all 4 queries — sequential to avoid overwhelming the DB
@@ -201,24 +203,33 @@ export class MySQLAdapter implements SchemaAdapter {
       const [indexRows] = await connection.query<mysql.RowDataPacket[]>(INDEXES_QUERY, [db]);
       const [fkRows] = await connection.query<mysql.RowDataPacket[]>(FOREIGN_KEYS_QUERY, [db]);
 
+      // Casts rely on the SELECTs in queries.ts matching the Raw* interfaces exactly.
+      // mysql2 returns RowDataPacket[] which is structurally compatible but untyped.
+      // Any change to queries.ts column aliases must be reflected in RawTable,
+      // RawColumn, RawIndex, and RawForeignKey before calling buildSchema().
       return buildSchema(
         tableRows as unknown as RawTable[],
         columnRows as unknown as RawColumn[],
         indexRows as unknown as RawIndex[],
         fkRows as unknown as RawForeignKey[]
       );
+    } catch (err) {
+      throw sanitizeError(err, 'Failed to load schema');
     } finally {
-      await connection.end();
+      await connection?.end();
     }
   }
 
   async testConnection(config: ConnectionConfig): Promise<boolean> {
-    const connection = await this.createConnection(config);
+    let connection: mysql.Connection | undefined;
     try {
+      connection = await this.createConnection(config);
       await connection.query('SELECT 1');
       return true;
+    } catch (err) {
+      throw sanitizeError(err, 'Failed to connect to database');
     } finally {
-      await connection.end();
+      await connection?.end();
     }
   }
 
