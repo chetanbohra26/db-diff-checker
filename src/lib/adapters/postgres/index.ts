@@ -10,6 +10,7 @@ import type {
 } from '../../types/schema';
 import { COLUMNS_QUERY, ENUMS_QUERY, INDEXES_QUERY, FOREIGN_KEYS_QUERY } from './queries';
 import { normalizePostgresType, normalizeDefault } from './normalizer';
+import { sanitizeError } from '../../util/sanitizeError';
 
 // ── Raw row shapes ─────────────────────────────────────────────────────────
 
@@ -142,8 +143,10 @@ function buildSchema(
 export class PostgresAdapter implements SchemaAdapter {
   async loadSchema(config: ConnectionConfig): Promise<DatabaseSchema> {
     const client = this.createClient(config);
-    await client.connect();
+    let connected = false;
     try {
+      await client.connect();
+      connected = true;
       const schema = config.schema ?? 'public';
 
       // Run all 4 queries in parallel
@@ -160,8 +163,10 @@ export class PostgresAdapter implements SchemaAdapter {
         indexesResult.rows,
         fksResult.rows
       );
+    } catch (err) {
+      throw sanitizeError(err, 'Failed to load schema');
     } finally {
-      await client.end();
+      if (connected) await client.end();
     }
   }
 
@@ -173,6 +178,8 @@ export class PostgresAdapter implements SchemaAdapter {
       connected = true;
       await client.query('SELECT 1');
       return true;
+    } catch (err) {
+      throw sanitizeError(err, 'Failed to connect to database');
     } finally {
       if (connected) await client.end();
     }
