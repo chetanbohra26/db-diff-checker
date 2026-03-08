@@ -8,9 +8,9 @@ export function sanitizeError(err: unknown, fallbackMessage: string): Error {
   // original message, which may contain host/password from the connection config.
   const safe = new Error(fallbackMessage);
 
-  // Preserve the stack trace shape for debugging without leaking message content
+  // Preserve original stack frames but replace the leaked message with the safe one
   if (err instanceof Error && err.stack) {
-    safe.stack = safe.stack?.replace(safe.message, fallbackMessage);
+    safe.stack = err.stack.replace(err.message, fallbackMessage);
   }
 
   return safe;

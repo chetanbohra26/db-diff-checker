@@ -79,6 +79,14 @@ describe('normalizeMySQLType', () => {
   test('normalizes set type', () => {
     expect(normalizeMySQLType("SET('a','b','c')")).toBe("set('a','b','c')");
   });
+
+  test('re-escapes single quotes inside enum values', () => {
+    expect(normalizeMySQLType("ENUM('it''s','fine')")).toBe("enum('it''s','fine')");
+  });
+
+  test('re-escapes single quotes inside set values', () => {
+    expect(normalizeMySQLType("SET('it''s','ok')")).toBe("set('it''s','ok')");
+  });
 });
 
 describe('parseEnumValues', () => {
@@ -116,12 +124,14 @@ describe('normalizeDefault', () => {
     expect(normalizeDefault(null)).toBeNull();
   });
 
-  test('lowercases string defaults', () => {
+  test('lowercases unquoted SQL expression defaults', () => {
     expect(normalizeDefault('ACTIVE')).toBe('active');
   });
 
-  test('strips surrounding single quotes', () => {
-    expect(normalizeDefault("'hello'")).toBe('hello');
+  test('preserves quoted string defaults exactly as-is (case-sensitive)', () => {
+    expect(normalizeDefault("'hello'")).toBe("'hello'");
+    expect(normalizeDefault("'ACTIVE'")).toBe("'ACTIVE'");
+    expect(normalizeDefault("'Hello World'")).toBe("'Hello World'");
   });
 
   test('normalizes now() to current_timestamp', () => {

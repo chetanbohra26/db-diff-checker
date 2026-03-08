@@ -193,6 +193,7 @@ function buildSchema(
 export class MySQLAdapter implements SchemaAdapter {
   async loadSchema(config: ConnectionConfig): Promise<DatabaseSchema> {
     let connection: mysql.Connection | undefined;
+    let primaryError: Error | undefined;
     try {
       connection = await this.createConnection(config);
       const db = config.database;
@@ -214,22 +215,34 @@ export class MySQLAdapter implements SchemaAdapter {
         fkRows as unknown as RawForeignKey[]
       );
     } catch (err) {
-      throw sanitizeError(err, 'Failed to load schema');
+      primaryError = sanitizeError(err, 'Failed to load schema');
+      throw primaryError;
     } finally {
-      await connection?.end();
+      try {
+        await connection?.end();
+      } catch {
+        // Only surface a close failure when there is no primary error to preserve
+        if (!primaryError) throw sanitizeError(null, 'Failed to close connection');
+      }
     }
   }
 
   async testConnection(config: ConnectionConfig): Promise<boolean> {
     let connection: mysql.Connection | undefined;
+    let primaryError: Error | undefined;
     try {
       connection = await this.createConnection(config);
       await connection.query('SELECT 1');
       return true;
     } catch (err) {
-      throw sanitizeError(err, 'Failed to connect to database');
+      primaryError = sanitizeError(err, 'Failed to connect to database');
+      throw primaryError;
     } finally {
-      await connection?.end();
+      try {
+        await connection?.end();
+      } catch {
+        if (!primaryError) throw sanitizeError(null, 'Failed to close connection');
+      }
     }
   }
 

@@ -29,7 +29,8 @@ export function normalizeMySQLType(raw: string): string {
   if (enumMatch) {
     const keyword = enumMatch[1].toLowerCase();
     const values = parseEnumValues(enumMatch[2]);
-    return `${keyword}(${values.map((v) => `'${v}'`).join(',')})`;
+    // Re-escape single quotes inside values using doubled single-quote convention
+    return `${keyword}(${values.map((v) => `'${v.replace(/'/g, "''")}'`).join(',')})`;
   }
 
   // ── Integer display-width stripping ───────────────────────────────────────
@@ -96,14 +97,17 @@ export function parseEnumValues(raw: string): string[] {
 export function normalizeDefault(value: string | null): string | null {
   if (value === null) return null;
 
-  let v = value.trim().toLowerCase();
+  const trimmed = value.trim();
 
-  // Strip surrounding single quotes (MySQL sometimes wraps string defaults)
-  if (v.startsWith("'") && v.endsWith("'")) {
-    v = v.slice(1, -1);
+  // String literal defaults (single-quoted) are preserved exactly as-is.
+  // Case and content are semantically significant — 'Active' ≠ 'active'.
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed;
   }
 
-  // Canonical timestamp aliases
+  // SQL expression defaults are case-insensitive — canonicalize to lowercase
+  const lower = trimmed.toLowerCase();
+
   const timestampAliases: Record<string, string> = {
     'current_timestamp()': 'current_timestamp',
     'now()': 'current_timestamp',
@@ -113,5 +117,5 @@ export function normalizeDefault(value: string | null): string | null {
     'localtimestamp()': 'current_timestamp',
   };
 
-  return timestampAliases[v] ?? v;
+  return timestampAliases[lower] ?? lower;
 }
