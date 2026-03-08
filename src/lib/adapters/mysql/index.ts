@@ -1,13 +1,280 @@
+import mysql from 'mysql2/promise';
 import type { SchemaAdapter } from '../base';
 import type { ConnectionConfig } from '../../types/connection';
-import type { DatabaseSchema } from '../../types/schema';
+import type {
+  DatabaseSchema,
+  TableSchema,
+  ColumnSchema,
+  IndexSchema,
+  ForeignKeySchema,
+} from '../../types/schema';
+import {
+  TABLES_QUERY,
+  COLUMNS_QUERY,
+  INDEXES_QUERY,
+  FOREIGN_KEYS_QUERY,
+} from './queries';
+import { normalizeMySQLType, parseEnumValues, normalizeDefault } from './normalizer';
+import { sanitizeError } from '../../util/sanitizeError';
 
-export class MySQLAdapter implements SchemaAdapter {
-  async loadSchema(_config: ConnectionConfig): Promise<DatabaseSchema> {
-    throw new Error('MySQLAdapter.loadSchema not yet implemented');
+// ── Raw row shapes from information_schema ────────────────────────────────
+
+interface RawTable {
+  TABLE_NAME: string;
+}
+
+interface RawColumn {
+  TABLE_NAME: string;
+  COLUMN_NAME: string;
+  COLUMN_TYPE: string;
+  IS_NULLABLE: string; // 'YES' | 'NO'
+  COLUMN_DEFAULT: string | null;
+  EXTRA: string | null;
+}
+
+interface RawIndex {
+  TABLE_NAME: string;
+  INDEX_NAME: string;
+  NON_UNIQUE: number; // 0 = unique, 1 = non-unique
+  SEQ_IN_INDEX: number;
+  COLUMN_NAME: string;
+}
+
+interface RawForeignKey {
+  TABLE_NAME: string;
+  CONSTRAINT_NAME: string;
+  COLUMN_NAME: string;
+  REFERENCED_TABLE_NAME: string;
+  REFERENCED_COLUMN_NAME: string;
+  ORDINAL_POSITION: number;
+  UPDATE_RULE: string;
+  DELETE_RULE: string;
+}
+
+// ── Schema builder ─────────────────────────────────────────────────────────
+
+function buildSchema(
+  tableRows: RawTable[],
+  columnRows: RawColumn[],
+  indexRows: RawIndex[],
+  fkRows: RawForeignKey[]
+): DatabaseSchema {
+  const tables: Record<string, TableSchema> = {};
+
+  // Seed all known tables (catches tables with zero columns)
+  for (const row of tableRows) {
+    const name = row.TABLE_NAME.toLowerCase();
+    tables[name] = { name, columns: {}, indexes: {}, foreignKeys: {} };
   }
 
-  async testConnection(_config: ConnectionConfig): Promise<boolean> {
-    throw new Error('MySQLAdapter.testConnection not yet implemented');
+  // ── Columns (single pass) ───────────────────────────────────────────────
+  for (const row of columnRows) {
+    const tableName = row.TABLE_NAME.toLowerCase();
+    const colName = row.COLUMN_NAME.toLowerCase();
+
+    if (!tables[tableName]) {
+      // Table appeared in COLUMNS but not TABLES — shouldn't happen, but be safe
+      tables[tableName] = { name: tableName, columns: {}, indexes: {}, foreignKeys: {} };
+    }
+
+    const rawType = row.COLUMN_TYPE;
+    const normalizedType = normalizeMySQLType(rawType);
+
+    // Extract enum values when column type is enum or set
+    let enumValues: string[] | null = null;
+    const enumMatch = rawType.match(/^(enum|set)\((.+)\)$/i);
+    if (enumMatch) {
+      enumValues = parseEnumValues(enumMatch[2]);
+    }
+
+    const column: ColumnSchema = {
+      name: colName,
+      type: normalizedType,
+      nullable: row.IS_NULLABLE === 'YES',
+      default: normalizeDefault(row.COLUMN_DEFAULT),
+      extra: row.EXTRA ? row.EXTRA.toLowerCase() : null,
+      enumValues,
+    };
+
+    tables[tableName].columns[colName] = column;
+  }
+
+  // ── Indexes (single pass, accumulate multi-column indexes) ───────────────
+  // Store {seq, column} pairs so we can sort by SEQ_IN_INDEX before finalising.
+  // Rows from information_schema.STATISTICS are ordered by SEQ_IN_INDEX per the
+  // query, but we sort explicitly to guard against any driver reordering.
+  const indexAccumulator: Record<
+    string,
+    Record<string, { nonUnique: number; primary: boolean; colEntries: { seq: number; col: string }[] }>
+  > = {};
+
+  for (const row of indexRows) {
+    const tableName = row.TABLE_NAME.toLowerCase();
+    const indexName = row.INDEX_NAME; // keep original case — 'PRIMARY' is significant
+
+    if (!indexAccumulator[tableName]) indexAccumulator[tableName] = {};
+    if (!indexAccumulator[tableName][indexName]) {
+      indexAccumulator[tableName][indexName] = {
+        nonUnique: row.NON_UNIQUE,
+        primary: indexName === 'PRIMARY',
+        colEntries: [],
+      };
+    }
+    indexAccumulator[tableName][indexName].colEntries.push({
+      seq: row.SEQ_IN_INDEX,
+      col: row.COLUMN_NAME.toLowerCase(),
+    });
+  }
+
+  for (const [tableName, indexes] of Object.entries(indexAccumulator)) {
+    if (!tables[tableName]) continue;
+    for (const [indexName, data] of Object.entries(indexes)) {
+      const columns = data.colEntries
+        .sort((a, b) => a.seq - b.seq)
+        .map((e) => e.col);
+      const index: IndexSchema = {
+        name: indexName,
+        columns,
+        unique: data.nonUnique === 0,
+        primary: data.primary,
+      };
+      tables[tableName].indexes[indexName] = index;
+    }
+  }
+
+  // ── Foreign keys (single pass, accumulate multi-column FKs) ─────────────
+  // Store raw column pairs with ORDINAL_POSITION so we can sort before building
+  // the final arrays — input order is not guaranteed to match ordinal order.
+  const fkAccumulator: Record<
+    string,
+    Record<
+      string,
+      {
+        referencedTable: string;
+        colEntries: { ordinal: number; col: string; refCol: string }[];
+        updateRule: string;
+        deleteRule: string;
+      }
+    >
+  > = {};
+
+  for (const row of fkRows) {
+    const tableName = row.TABLE_NAME.toLowerCase();
+    const constraintName = row.CONSTRAINT_NAME;
+
+    if (!fkAccumulator[tableName]) fkAccumulator[tableName] = {};
+    if (!fkAccumulator[tableName][constraintName]) {
+      fkAccumulator[tableName][constraintName] = {
+        referencedTable: row.REFERENCED_TABLE_NAME.toLowerCase(),
+        colEntries: [],
+        updateRule: row.UPDATE_RULE,
+        deleteRule: row.DELETE_RULE,
+      };
+    }
+    fkAccumulator[tableName][constraintName].colEntries.push({
+      ordinal: row.ORDINAL_POSITION,
+      col: row.COLUMN_NAME.toLowerCase(),
+      refCol: row.REFERENCED_COLUMN_NAME.toLowerCase(),
+    });
+  }
+
+  for (const [tableName, fks] of Object.entries(fkAccumulator)) {
+    if (!tables[tableName]) continue;
+    for (const [constraintName, data] of Object.entries(fks)) {
+      const sorted = data.colEntries.sort((a, b) => a.ordinal - b.ordinal);
+      const fk: ForeignKeySchema = {
+        name: constraintName,
+        columns: sorted.map((e) => e.col),
+        referencedTable: data.referencedTable,
+        referencedColumns: sorted.map((e) => e.refCol),
+        onDelete: data.deleteRule,
+        onUpdate: data.updateRule,
+      };
+      tables[tableName].foreignKeys[constraintName] = fk;
+    }
+  }
+
+  return { tables, driver: 'mysql' };
+}
+
+// ── Adapter ────────────────────────────────────────────────────────────────
+
+export class MySQLAdapter implements SchemaAdapter {
+  async loadSchema(config: ConnectionConfig): Promise<DatabaseSchema> {
+    let connection: mysql.Connection | undefined;
+    let primaryError: Error | undefined;
+    let result: DatabaseSchema | undefined;
+
+    try {
+      connection = await this.createConnection(config);
+      const db = config.database;
+
+      // Run all 4 queries — sequential to avoid overwhelming the DB
+      const [tableRows] = await connection.query<mysql.RowDataPacket[]>(TABLES_QUERY, [db]);
+      const [columnRows] = await connection.query<mysql.RowDataPacket[]>(COLUMNS_QUERY, [db]);
+      const [indexRows] = await connection.query<mysql.RowDataPacket[]>(INDEXES_QUERY, [db]);
+      const [fkRows] = await connection.query<mysql.RowDataPacket[]>(FOREIGN_KEYS_QUERY, [db]);
+
+      // Casts rely on the SELECTs in queries.ts matching the Raw* interfaces exactly.
+      // mysql2 returns RowDataPacket[] which is structurally compatible but untyped.
+      // Any change to queries.ts column aliases must be reflected in RawTable,
+      // RawColumn, RawIndex, and RawForeignKey before calling buildSchema().
+      result = buildSchema(
+        tableRows as unknown as RawTable[],
+        columnRows as unknown as RawColumn[],
+        indexRows as unknown as RawIndex[],
+        fkRows as unknown as RawForeignKey[]
+      );
+    } catch (err) {
+      primaryError = sanitizeError(err, 'Failed to load schema');
+    }
+
+    // Close connection after try/catch so a close failure can never override
+    // the primary error — cleanup always runs, rethrow order is explicit.
+    let closeError: Error | undefined;
+    try {
+      await connection?.end();
+    } catch (err) {
+      closeError = sanitizeError(err, 'Failed to close connection');
+    }
+
+    if (primaryError) throw primaryError;
+    if (closeError) throw closeError;
+    return result!;
+  }
+
+  async testConnection(config: ConnectionConfig): Promise<boolean> {
+    let connection: mysql.Connection | undefined;
+    let primaryError: Error | undefined;
+
+    try {
+      connection = await this.createConnection(config);
+      await connection.query('SELECT 1');
+    } catch (err) {
+      primaryError = sanitizeError(err, 'Failed to connect to database');
+    }
+
+    let closeError: Error | undefined;
+    try {
+      await connection?.end();
+    } catch (err) {
+      closeError = sanitizeError(err, 'Failed to close connection');
+    }
+
+    if (primaryError) throw primaryError;
+    if (closeError) throw closeError;
+    return true;
+  }
+
+  private async createConnection(config: ConnectionConfig): Promise<mysql.Connection> {
+    return mysql.createConnection({
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      user: config.username,
+      password: config.password,
+      ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
+      connectTimeout: config.connectTimeoutMs ?? 10_000,
+    });
   }
 }
