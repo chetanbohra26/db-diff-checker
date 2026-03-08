@@ -100,10 +100,12 @@ function buildSchema(
   }
 
   // ── Indexes (single pass, accumulate multi-column indexes) ───────────────
-  // Temporary accumulator: tableName → indexName → { row, columns[] }
+  // Store {seq, column} pairs so we can sort by SEQ_IN_INDEX before finalising.
+  // Rows from information_schema.STATISTICS are ordered by SEQ_IN_INDEX per the
+  // query, but we sort explicitly to guard against any driver reordering.
   const indexAccumulator: Record<
     string,
-    Record<string, { nonUnique: number; primary: boolean; columns: string[] }>
+    Record<string, { nonUnique: number; primary: boolean; colEntries: { seq: number; col: string }[] }>
   > = {};
 
   for (const row of indexRows) {
@@ -115,19 +117,24 @@ function buildSchema(
       indexAccumulator[tableName][indexName] = {
         nonUnique: row.NON_UNIQUE,
         primary: indexName === 'PRIMARY',
-        columns: [],
+        colEntries: [],
       };
     }
-    // SEQ_IN_INDEX is 1-based and rows are ordered — just push in order
-    indexAccumulator[tableName][indexName].columns.push(row.COLUMN_NAME.toLowerCase());
+    indexAccumulator[tableName][indexName].colEntries.push({
+      seq: row.SEQ_IN_INDEX,
+      col: row.COLUMN_NAME.toLowerCase(),
+    });
   }
 
   for (const [tableName, indexes] of Object.entries(indexAccumulator)) {
     if (!tables[tableName]) continue;
     for (const [indexName, data] of Object.entries(indexes)) {
+      const columns = data.colEntries
+        .sort((a, b) => a.seq - b.seq)
+        .map((e) => e.col);
       const index: IndexSchema = {
         name: indexName,
-        columns: data.columns,
+        columns,
         unique: data.nonUnique === 0,
         primary: data.primary,
       };
@@ -136,14 +143,15 @@ function buildSchema(
   }
 
   // ── Foreign keys (single pass, accumulate multi-column FKs) ─────────────
+  // Store raw column pairs with ORDINAL_POSITION so we can sort before building
+  // the final arrays — input order is not guaranteed to match ordinal order.
   const fkAccumulator: Record<
     string,
     Record<
       string,
       {
         referencedTable: string;
-        columns: string[];
-        referencedColumns: string[];
+        colEntries: { ordinal: number; col: string; refCol: string }[];
         updateRule: string;
         deleteRule: string;
       }
@@ -158,26 +166,27 @@ function buildSchema(
     if (!fkAccumulator[tableName][constraintName]) {
       fkAccumulator[tableName][constraintName] = {
         referencedTable: row.REFERENCED_TABLE_NAME.toLowerCase(),
-        columns: [],
-        referencedColumns: [],
+        colEntries: [],
         updateRule: row.UPDATE_RULE,
         deleteRule: row.DELETE_RULE,
       };
     }
-    fkAccumulator[tableName][constraintName].columns.push(row.COLUMN_NAME.toLowerCase());
-    fkAccumulator[tableName][constraintName].referencedColumns.push(
-      row.REFERENCED_COLUMN_NAME.toLowerCase()
-    );
+    fkAccumulator[tableName][constraintName].colEntries.push({
+      ordinal: row.ORDINAL_POSITION,
+      col: row.COLUMN_NAME.toLowerCase(),
+      refCol: row.REFERENCED_COLUMN_NAME.toLowerCase(),
+    });
   }
 
   for (const [tableName, fks] of Object.entries(fkAccumulator)) {
     if (!tables[tableName]) continue;
     for (const [constraintName, data] of Object.entries(fks)) {
+      const sorted = data.colEntries.sort((a, b) => a.ordinal - b.ordinal);
       const fk: ForeignKeySchema = {
         name: constraintName,
-        columns: data.columns,
+        columns: sorted.map((e) => e.col),
         referencedTable: data.referencedTable,
-        referencedColumns: data.referencedColumns,
+        referencedColumns: sorted.map((e) => e.refCol),
         onDelete: data.deleteRule,
         onUpdate: data.updateRule,
       };
