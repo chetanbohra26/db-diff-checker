@@ -62,8 +62,9 @@ function buildSchema(
   // ── Build enum catalog: enumName → values[] ──────────────────────────────
   const enumCatalog: Record<string, string[]> = {};
   for (const row of enumRows) {
-    if (!enumCatalog[row.enum_name]) enumCatalog[row.enum_name] = [];
-    enumCatalog[row.enum_name].push(row.enum_value);
+    const enumName = row.enum_name.toLowerCase();
+    if (!enumCatalog[enumName]) enumCatalog[enumName] = [];
+    enumCatalog[enumName].push(row.enum_value);
   }
 
   // ── Columns (single pass) ────────────────────────────────────────────────
@@ -86,7 +87,7 @@ function buildSchema(
     // Resolve enum values for USER-DEFINED types
     let enumValues: string[] | null = null;
     if (row.data_type.toLowerCase() === 'user-defined') {
-      enumValues = enumCatalog[row.udt_name] ?? null;
+      enumValues = enumCatalog[row.udt_name.toLowerCase()] ?? null;
     }
 
     const column: ColumnSchema = {
