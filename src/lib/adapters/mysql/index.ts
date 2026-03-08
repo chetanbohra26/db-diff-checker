@@ -194,6 +194,8 @@ export class MySQLAdapter implements SchemaAdapter {
   async loadSchema(config: ConnectionConfig): Promise<DatabaseSchema> {
     let connection: mysql.Connection | undefined;
     let primaryError: Error | undefined;
+    let result: DatabaseSchema | undefined;
+
     try {
       connection = await this.createConnection(config);
       const db = config.database;
@@ -208,7 +210,7 @@ export class MySQLAdapter implements SchemaAdapter {
       // mysql2 returns RowDataPacket[] which is structurally compatible but untyped.
       // Any change to queries.ts column aliases must be reflected in RawTable,
       // RawColumn, RawIndex, and RawForeignKey before calling buildSchema().
-      return buildSchema(
+      result = buildSchema(
         tableRows as unknown as RawTable[],
         columnRows as unknown as RawColumn[],
         indexRows as unknown as RawIndex[],
@@ -216,34 +218,43 @@ export class MySQLAdapter implements SchemaAdapter {
       );
     } catch (err) {
       primaryError = sanitizeError(err, 'Failed to load schema');
-      throw primaryError;
-    } finally {
-      try {
-        await connection?.end();
-      } catch {
-        // Only surface a close failure when there is no primary error to preserve
-        if (!primaryError) throw sanitizeError(null, 'Failed to close connection');
-      }
     }
+
+    // Close connection after try/catch so a close failure can never override
+    // the primary error — cleanup always runs, rethrow order is explicit.
+    let closeError: Error | undefined;
+    try {
+      await connection?.end();
+    } catch (err) {
+      closeError = sanitizeError(err, 'Failed to close connection');
+    }
+
+    if (primaryError) throw primaryError;
+    if (closeError) throw closeError;
+    return result!;
   }
 
   async testConnection(config: ConnectionConfig): Promise<boolean> {
     let connection: mysql.Connection | undefined;
     let primaryError: Error | undefined;
+
     try {
       connection = await this.createConnection(config);
       await connection.query('SELECT 1');
-      return true;
     } catch (err) {
       primaryError = sanitizeError(err, 'Failed to connect to database');
-      throw primaryError;
-    } finally {
-      try {
-        await connection?.end();
-      } catch {
-        if (!primaryError) throw sanitizeError(null, 'Failed to close connection');
-      }
     }
+
+    let closeError: Error | undefined;
+    try {
+      await connection?.end();
+    } catch (err) {
+      closeError = sanitizeError(err, 'Failed to close connection');
+    }
+
+    if (primaryError) throw primaryError;
+    if (closeError) throw closeError;
+    return true;
   }
 
   private async createConnection(config: ConnectionConfig): Promise<mysql.Connection> {

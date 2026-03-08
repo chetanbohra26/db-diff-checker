@@ -124,8 +124,9 @@ describe('normalizeDefault', () => {
     expect(normalizeDefault(null)).toBeNull();
   });
 
-  test('lowercases unquoted SQL expression defaults', () => {
-    expect(normalizeDefault('ACTIVE')).toBe('active');
+  test('preserves original casing for unquoted non-expression defaults', () => {
+    expect(normalizeDefault('ACTIVE')).toBe('ACTIVE');
+    expect(normalizeDefault('Hello')).toBe('Hello');
   });
 
   test('preserves quoted string defaults exactly as-is (case-sensitive)', () => {

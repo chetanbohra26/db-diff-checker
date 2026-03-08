@@ -105,10 +105,12 @@ export function normalizeDefault(value: string | null): string | null {
     return trimmed;
   }
 
-  // SQL expression defaults are case-insensitive — canonicalize to lowercase
+  // Use lowercase only to match known SQL expression aliases.
+  // If no alias matches, return the trimmed original — preserve casing.
   const lower = trimmed.toLowerCase();
 
   const timestampAliases: Record<string, string> = {
+    'current_timestamp': 'current_timestamp',
     'current_timestamp()': 'current_timestamp',
     'now()': 'current_timestamp',
     'localtime': 'current_timestamp',
@@ -117,5 +119,5 @@ export function normalizeDefault(value: string | null): string | null {
     'localtimestamp()': 'current_timestamp',
   };
 
-  return timestampAliases[lower] ?? lower;
+  return timestampAliases[lower] ?? trimmed;
 }
